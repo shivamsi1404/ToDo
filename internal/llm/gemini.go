@@ -9,7 +9,6 @@ import (
     "os"
     "time"
 
-    "github.com/joho/godotenv"
 )
 
 type GeminiRequest struct {
@@ -33,12 +32,6 @@ type Candidate struct {
 }
 
 func GenerateGeminiResponse(prompt string) (string, error) {
-
-    // load the environment variables from the .env file
-    err := godotenv.Load()
-    if err != nil {
-        return "", err
-    }
 
     // got the api key from the environment variable
 	apiKey := os.Getenv("GEMINI_API_KEY")
