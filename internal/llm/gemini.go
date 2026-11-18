@@ -110,3 +110,14 @@ func GenerateGeminiResponse(prompt string) (string, error) {
 
     return result.Candidates[0].Content.Parts[0].Text, nil
 }
+
+
+type Gemini struct {
+    apiKey string
+    model  string
+    client *http.Client
+}
+
+func NewGemini(apiKey, model string) *Gemini {
+    return &Gemini{apiKey, model, &http.Client{Timeout: 30 * time.Second}}
+}
