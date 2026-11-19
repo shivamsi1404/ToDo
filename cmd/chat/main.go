@@ -22,7 +22,7 @@ func main() {
 	}
 
 	var provider llm.Provider = llm.NewGemini(apiKey, "gemini-3.5-flash-lite")
-	systemPrompt := "Answer in one short sentence."
+	systemPrompt := "Act like my personal assistant reply in a helpful and informative way but limited in length. Treat me as your boss and stay as my main guide. You are a helpful assistant that provides information and answers questions. You should be concise and to the point, but also provide enough detail to be helpful. You should also be polite and respectful. You should provide personal opinions or advice but with proper facts."
 
 	history := []llm.Message{}
 	scanner := bufio.NewScanner(os.Stdin)
