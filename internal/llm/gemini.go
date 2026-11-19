@@ -12,23 +12,32 @@ import (
 )
 
 type GeminiRequest struct {
-	Contents []Content `json:"contents"`
+    SystemInstruction *Content  `json:"systemInstruction,omitempty"`
+    Contents          []Content `json:"contents"`
 }
 
 type Content struct {
-	Parts []Part `json:"parts"`
+    Role  string `json:"role,omitempty"`
+    Parts []Part `json:"parts"`
 }
 
 type Part struct {
-	Text string `json:"text"`
+    Text string `json:"text"`
 }
 
 type GeminiResponse struct {
-	Candidates []Candidate `json:"candidates"`
+    Candidates    []Candidate   `json:"candidates"`
+    UsageMetadata UsageMetadata `json:"usageMetadata"`
 }
 
 type Candidate struct {
-	Content Content `json:"content"`
+    Content      Content `json:"content"`
+    FinishReason string  `json:"finishReason"`
+}
+
+type UsageMetadata struct {
+    PromptTokenCount     int `json:"promptTokenCount"`
+    CandidatesTokenCount int `json:"candidatesTokenCount"`
 }
 
 func GenerateGeminiResponse(prompt string) (string, error) {
