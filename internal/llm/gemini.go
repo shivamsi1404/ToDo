@@ -111,7 +111,7 @@ func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt strin
 	if err != nil {
 		return "", Usage{}, err
 	}
-	fmt.Println("Raw response from Gemini API:", string(raw))
+	// fmt.Println("Raw response from Gemini API:", string(raw)) // Uncomment this line for debugging purposes
 
 	// unmarshal the response body into a GeminiResponse struct
 	var result GeminiResponse
