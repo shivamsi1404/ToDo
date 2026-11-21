@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -43,7 +44,15 @@ func main() {
 
 		history = append(history, llm.Message{Role: llm.RoleUser, Content: line})
 
-		reply, usage, err := provider.Chat(context.Background(), history, systemPrompt)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+
+		fmt.Print("ai> ")
+		reply, usage, err := provider.ChatStream(ctx, history, systemPrompt, func(s string) {
+			fmt.Print(s)
+		})
+		cancel() // after the call returns, not inside the callback
+		fmt.Println()
+
 		if err != nil {
 			fmt.Println("error:", err)
 			history = history[:len(history)-1] // drop the failed turn
@@ -51,6 +60,7 @@ func main() {
 		}
 
 		history = append(history, llm.Message{Role: llm.RoleAssistant, Content: reply})
-		fmt.Printf("ai> %s\n[tokens: in=%d out=%d]\n", reply, usage.InputTokens, usage.OutputTokens)
+		fmt.Printf("[tokens: in=%d out=%d]\n", usage.InputTokens, usage.OutputTokens)
 	}
+	fmt.Println("Chat ended.")
 }
