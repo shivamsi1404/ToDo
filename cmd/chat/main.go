@@ -63,4 +63,8 @@ func main() {
 		fmt.Printf("[tokens: in=%d out=%d]\n", usage.InputTokens, usage.OutputTokens)
 	}
 	fmt.Println("Chat ended.")
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("error reading input:", err)
+	}
 }
