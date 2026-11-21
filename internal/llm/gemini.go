@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type GeminiRequest struct {
@@ -57,30 +58,14 @@ func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt strin
 		return "", Usage{}, err
 	}
 
-	// crete a new HTTP request to the Gemini API
-	request, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsondata))
+	// send the request to the Gemini API with retry logic
+	response, err := g.doWithRetry(ctx, endpoint, jsondata)
 	if err != nil {
-		return "", Usage{}, err
+	return "", Usage{}, err
 	}
 
-	// set the headers for the request
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("x-goog-api-key", g.apiKey)
-
-	// send the request to the Gemini API and get the response`
-	response, err := g.client.Do(request)
-	if err != nil {
-		return "", Usage{}, err
-	}
-
-	// ensure the response body is closed after reading
+	// ensure the response body is closed after reading to avoid resource leaks
 	defer response.Body.Close()
-
-	// read the response body and check for errors
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		return "", Usage{}, fmt.Errorf("gemini api error (status %d): %s", response.StatusCode, body)
-	}
 
 	// read the response body raw and print it for debugging purposes
 	raw, err := io.ReadAll(response.Body)
@@ -149,23 +134,12 @@ func (g *Gemini) ChatStream(ctx context.Context, history []Message, systemPrompt
 	}
 
 	// create a new HTTP request to the Gemini API
-	request, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsondata))
+	response, err := g.doWithRetry(ctx, endpoint, jsondata)
 	if err != nil {
 		return "", Usage{}, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("x-goog-api-key", g.apiKey)
 
-	response, err := g.client.Do(request)
-	if err != nil {
-		return "", Usage{}, err
-	}
 	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(response.Body)
-		return "", Usage{}, fmt.Errorf("gemini api error (status %d): %s", response.StatusCode, body)
-	}
 
 	// read the response body line by line and process each chunk of data
 	var full strings.Builder
@@ -259,4 +233,67 @@ func buildRequest(history []Message, systemPrompt string) GeminiRequest {
 
 	// return the GeminiRequest struct
 	return req
+}
+
+// set a maximum number of attempts for retrying requests to the Gemini API
+const maxAttempts = 4
+
+// normalize the status code to determine if the request should be retried
+func retryable(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
+}
+
+// doWithRetry sends the request and retries on temporary failures.
+// It returns only a 200 response; the caller must close the body.
+func (g *Gemini) doWithRetry(ctx context.Context, url string, body []byte) (*http.Response, error) {
+	
+	// lastErr is used to capture the last error encountered during the retry attempts
+	var lastErr error
+
+	// iterate over the maximum number of attempts to send the request
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			wait := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+			select {
+			case <-time.After(wait): 
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		// create a new HTTP request with the provided context, URL, and body
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", g.apiKey)
+
+		// send the request to the Gemini API and get the response
+		resp, err := g.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err() // cancelled or timed out: don't retry
+			}
+			lastErr = err // network error: retry
+			continue
+		}
+
+		// check the response status code to determine if the request was successful or if it should be retried
+		if resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+
+		// read the response body and close it to avoid resource leaks
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastErr = fmt.Errorf("gemini api error (status %d): %s", resp.StatusCode, b)
+
+		// if the status code is not retryable, return the last error encountered
+		if !retryable(resp.StatusCode) {
+			return nil, lastErr // 400/401/403/404: retrying can't help
+		}
+	}
+
+	return nil, fmt.Errorf("gave up after %d attempts: %w", maxAttempts, lastErr)
 }

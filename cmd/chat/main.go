@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -34,7 +36,7 @@ func main() {
 		if !scanner.Scan() {
 			break
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(scanner.Text()) 
 		if line == "" {
 			continue
 		}
@@ -44,18 +46,29 @@ func main() {
 
 		history = append(history, llm.Message{Role: llm.RoleUser, Content: line})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		sigctx,stop := signal.NotifyContext(context.Background(), os.Interrupt) //
+		ctx, cancel := context.WithTimeout(sigctx, 2*time.Minute) // set a timeout for the chat request
 
-		fmt.Print("ai> ")
+		fmt.Print("ToDo> ")
 		reply, usage, err := provider.ChatStream(ctx, history, systemPrompt, func(s string) {
 			fmt.Print(s)
 		})
+
+		ctxerr := ctx.Err() // check if the context was canceled or timed out
 		cancel() // after the call returns, not inside the callback
+		stop()  // stop listening for signals
 		fmt.Println()
 
 		if err != nil {
-			fmt.Println("error:", err)
-			history = history[:len(history)-1] // drop the failed turn
+			history = history[:len(history)-1] // remove the last user message on error	
+			switch {
+			case errors.Is(ctxerr,context.Canceled): // check if the context was canceled
+				fmt.Println("Chat canceled by user.")
+			case errors.Is(ctxerr,context.DeadlineExceeded): // check if the context timed out
+				fmt.Println("Chat timed out.")
+			default:
+				fmt.Printf("Error: %v\n", err)
+			}
 			continue
 		}
 
