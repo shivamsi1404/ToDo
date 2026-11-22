@@ -15,6 +15,24 @@ import (
 	"github.com/shivamsi1404/ToDo/internal/llm"
 )
 
+type Task struct {
+	Title    string   `json:"title"`
+	Priority string   `json:"priority"`
+	Due      string   `json:"due"`
+	Tags     []string `json:"tags"`
+}
+
+var taskSchema = map[string]any{
+	"type": "OBJECT",
+	"properties": map[string]any{
+		"title":    map[string]any{"type": "STRING"},
+		"priority": map[string]any{"type": "STRING", "enum": []string{"low", "medium", "high"}},
+		"due":      map[string]any{"type": "STRING"},
+		"tags":     map[string]any{"type": "ARRAY", "items": map[string]any{"type": "STRING"}},
+	},
+	"required": []string{"title", "priority"},
+}
+
 func main() {
 	_ = godotenv.Load() // fine if .env is missing and the key is already in the environment
 
@@ -36,7 +54,7 @@ func main() {
 		if !scanner.Scan() {
 			break
 		}
-		line := strings.TrimSpace(scanner.Text()) 
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -44,10 +62,34 @@ func main() {
 			break
 		}
 
+		// ---- new block starts here ----
+		if strings.HasPrefix(line, "/json ") {
+			text := strings.TrimPrefix(line, "/json ")
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			task, usage, err := llm.AskJSON[Task](
+				ctx,
+				provider,
+				[]llm.Message{{Role: llm.RoleUser, Content: text}},
+				"Extract one task from the user's text. Leave due empty if no date is given.",
+				taskSchema,
+			)
+			cancel()
+
+			if err != nil {
+				fmt.Println("error:", err)
+				continue
+			}
+
+			fmt.Printf("task: %+v\n[tokens: in=%d out=%d]\n", task, usage.InputTokens, usage.OutputTokens)
+			continue
+		}
+		// ---- new block ends here ----
+
 		history = append(history, llm.Message{Role: llm.RoleUser, Content: line})
 
-		sigctx,stop := signal.NotifyContext(context.Background(), os.Interrupt) //
-		ctx, cancel := context.WithTimeout(sigctx, 2*time.Minute) // set a timeout for the chat request
+		sigctx, stop := signal.NotifyContext(context.Background(), os.Interrupt) //
+		ctx, cancel := context.WithTimeout(sigctx, 2*time.Minute)                // set a timeout for the chat request
 
 		fmt.Print("ToDo> ")
 		reply, usage, err := provider.ChatStream(ctx, history, systemPrompt, func(s string) {
@@ -55,16 +97,16 @@ func main() {
 		})
 
 		ctxerr := ctx.Err() // check if the context was canceled or timed out
-		cancel() // after the call returns, not inside the callback
-		stop()  // stop listening for signals
+		cancel()            // after the call returns, not inside the callback
+		stop()              // stop listening for signals
 		fmt.Println()
 
 		if err != nil {
-			history = history[:len(history)-1] // remove the last user message on error	
+			history = history[:len(history)-1] // remove the last user message on error
 			switch {
-			case errors.Is(ctxerr,context.Canceled): // check if the context was canceled
+			case errors.Is(ctxerr, context.Canceled): // check if the context was canceled
 				fmt.Println("Chat canceled by user.")
-			case errors.Is(ctxerr,context.DeadlineExceeded): // check if the context timed out
+			case errors.Is(ctxerr, context.DeadlineExceeded): // check if the context timed out
 				fmt.Println("Chat timed out.")
 			default:
 				fmt.Printf("Error: %v\n", err)
