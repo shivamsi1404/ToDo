@@ -15,6 +15,12 @@ import (
 type GeminiRequest struct {
 	SystemInstruction *Content  `json:"systemInstruction,omitempty"`
 	Contents          []Content `json:"contents"`
+	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
+}
+
+type GenerationConfig struct {
+	ResponseMimeType string         `json:"responseMimeType,omitempty"`
+	ResponseSchema   map[string]any `json:"responseSchema,omitempty"`
 }
 
 type Content struct {
@@ -44,7 +50,7 @@ type UsageMetadata struct {
 var _ Provider = (*Gemini)(nil) // Ensure Gemini implements the Provider interface
 
 // Chat method for the Gemini struct
-func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt string) (string, Usage, error) {
+func (g *Gemini) generate(ctx context.Context, body GeminiRequest) (string, Usage, error) {
 
 	// get the endpoint for the Gemini API
 	endpoint := fmt.Sprintf(
@@ -52,8 +58,8 @@ func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt strin
 		g.model,
 	)
 
-	// convert the request body to JSON
-	jsondata, err := json.Marshal(buildRequest(history, systemPrompt))
+	// marshal the request body into JSON format
+	jsondata, err := json.Marshal(body)
 	if err != nil {
 		return "", Usage{}, err
 	}
@@ -296,4 +302,19 @@ func (g *Gemini) doWithRetry(ctx context.Context, url string, body []byte) (*htt
 	}
 
 	return nil, fmt.Errorf("gave up after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt string) (string, Usage, error) {
+	return g.generate(ctx, buildRequest(history, systemPrompt))
+}
+
+func (g *Gemini) ChatJSON(ctx context.Context, history []Message, systemPrompt string, schema map[string]any) (string, Usage, error) {
+
+	// build the GeminiRequest with the provided history, system prompt, and schema for JSON response
+	req := buildRequest(history, systemPrompt)
+	req.GenerationConfig = &GenerationConfig{
+		ResponseMimeType: "application/json", // set the response MIME type to application/json
+		ResponseSchema:   schema, // set the response schema for JSON validation
+	}
+	return g.generate(ctx, req)
 }
