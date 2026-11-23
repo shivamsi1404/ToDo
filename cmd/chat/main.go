@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"time"
+	"path/filepath"
 
 	"github.com/joho/godotenv"
 
@@ -31,6 +32,82 @@ var taskSchema = map[string]any{
 		"tags":     map[string]any{"type": "ARRAY", "items": map[string]any{"type": "STRING"}},
 	},
 	"required": []string{"title", "priority"},
+}
+
+// real tool 
+
+// the notes directory is where the user's notes are stored. It should be a folder named "notes" in the current working directory.
+const notesDir = "notes"
+
+// getCurrentTime returns the current local date and time in a structured format.
+func getCurrentTime(ctx context.Context, args map[string]any) (map[string]any, error) {
+	now := time.Now()
+	return map[string]any{
+		"date":     now.Format("2006-01-02"),
+		"time":     now.Format("15:04:05"),
+		"timezone": now.Location().String(),
+	}, nil
+}
+
+// listNotes lists the names of the user's saved notes in the notes directory. It returns a map containing the note names without the ".md" extension.
+func listNotes(ctx context.Context, args map[string]any) (map[string]any, error) {
+	entries, err := os.ReadDir(notesDir)
+	if err != nil {
+		return nil, fmt.Errorf("notes folder not found")
+	}
+	names := []string{}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+		}
+	}
+	return map[string]any{"notes": names}, nil
+}
+
+// readNote reads the content of a note by name and returns it in a structured format.
+func readNote(ctx context.Context, args map[string]any) (map[string]any, error) {
+	name, _ := args["name"].(string)
+	name = strings.TrimSuffix(strings.TrimSpace(name), ".md")
+
+	// only a plain file name is allowed: no folders, no "..", no absolute paths
+	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") {
+		return nil, fmt.Errorf("invalid note name")
+	}
+
+	data, err := os.ReadFile(filepath.Join(notesDir, name+".md"))
+	if err != nil {
+		return nil, fmt.Errorf("could not read note %q", name)
+	}
+
+	const maxBytes = 20000 // keep one note from flooding the context window
+	text := string(data)
+	if len(text) > maxBytes {
+		text = text[:maxBytes]
+	}
+	return map[string]any{"name": name, "content": text}, nil
+}
+
+// toolSpecs and toolHandlers define the available tools and their corresponding Go functions. These are used by the LLM to request information or perform actions.
+var toolSpecs = []llm.ToolSpec{
+	{Name: "get_current_time", Description: "Get the current local date and time."},
+	{Name: "list_notes", Description: "List the names of the user's saved notes."},
+	{
+		Name:        "read_note",
+		Description: "Read one saved note by name, without the file extension. Use list_notes first if unsure of the name.",
+		Parameters: map[string]any{
+			"type": "OBJECT",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "STRING", "description": "Note name, e.g. os-lab"},
+			},
+			"required": []string{"name"},
+		},
+	},
+}
+
+var toolHandlers = map[string]llm.ToolHandler{
+	"get_current_time": getCurrentTime,
+	"list_notes":       listNotes,
+	"read_note":        readNote,
 }
 
 func main() {
