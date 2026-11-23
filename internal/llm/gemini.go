@@ -16,6 +16,7 @@ type GeminiRequest struct {
 	SystemInstruction *Content  `json:"systemInstruction,omitempty"`
 	Contents          []Content `json:"contents"`
 	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
+	Tools			  []Tool     `json:"tool,omitempty"`
 }
 
 type GenerationConfig struct {
@@ -29,7 +30,20 @@ type Content struct {
 }
 
 type Part struct {
-	Text string `json:"text"`
+	Text             string            `json:"text,omitempty"`
+	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
+}
+
+type FunctionCall struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
+}
+
+type FunctionResponse struct {
+	Name     string         `json:"name"`
+	Response map[string]any `json:"response"`
 }
 
 type GeminiResponse struct {
@@ -47,10 +61,20 @@ type UsageMetadata struct {
 	CandidatesTokenCount int `json:"candidatesTokenCount"`
 }
 
+type Tool struct {
+	FunctionDeclarations []FunctionDeclaration `json:"functionDeclarations"`
+}
+
+type FunctionDeclaration struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
 var _ Provider = (*Gemini)(nil) // Ensure Gemini implements the Provider interface
 
 // Chat method for the Gemini struct
-func (g *Gemini) generate(ctx context.Context, body GeminiRequest) (string, Usage, error) {
+func (g *Gemini) generate(ctx context.Context, body GeminiRequest) (Reply, Usage, error) {
 
 	// get the endpoint for the Gemini API
 	endpoint := fmt.Sprintf(
@@ -61,13 +85,13 @@ func (g *Gemini) generate(ctx context.Context, body GeminiRequest) (string, Usag
 	// marshal the request body into JSON format
 	jsondata, err := json.Marshal(body)
 	if err != nil {
-		return "", Usage{}, err
+		return Reply{}, Usage{}, err
 	}
 
 	// send the request to the Gemini API with retry logic
 	response, err := g.doWithRetry(ctx, endpoint, jsondata)
 	if err != nil {
-	return "", Usage{}, err
+		return Reply{}, Usage{}, err
 	}
 
 	// ensure the response body is closed after reading to avoid resource leaks
@@ -76,45 +100,60 @@ func (g *Gemini) generate(ctx context.Context, body GeminiRequest) (string, Usag
 	// read the response body raw and print it for debugging purposes
 	raw, err := io.ReadAll(response.Body)
 	if err != nil {
-		return "", Usage{}, err
+		return Reply{}, Usage{}, err
 	}
 	// fmt.Println("Raw response from Gemini API:", string(raw)) // Uncomment this line for debugging purposes
 
+	return parsereply(raw)
+}
+
+func parsereply(raw []byte) (Reply, Usage, error) {
 	// unmarshal the response body into a GeminiResponse struct
 	var result GeminiResponse
 
 	// unmarshal the raw response into the result struct and check for errors
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", Usage{}, err
+		return Reply{}, Usage{}, err
 	}
 
 	// check if the result has any candidates, if not return an error
 	if len(result.Candidates) == 0 {
-		return "", Usage{}, fmt.Errorf("gemini returned no candidates")
+		return Reply{}, Usage{}, fmt.Errorf("gemini returned no candidates")
 	}
 
 	// get the first candidate from the result and check if it has any content parts
 	cand := result.Candidates[0]
 	if len(cand.Content.Parts) == 0 {
-		return "", Usage{}, fmt.Errorf("gemini returned no content (finish reason: %s)", cand.FinishReason)
+		return Reply{}, Usage{}, fmt.Errorf("gemini returned no content (finish reason: %s)", cand.FinishReason)
 	}
 
-	// concatenate all the text parts into a single string
+	// initialize a Reply struct and a strings.Builder to accumulate the text content
+	var reply Reply
 	var text strings.Builder
 
-	// iterate over the content parts and write the text to the string builder
+	// iterate over the content parts of the candidate and build the reply text and tool calls
 	for _, p := range cand.Content.Parts {
 		text.WriteString(p.Text)
-	}
+		if p.FunctionCall != nil {
+			reply.ToolCalls = append(reply.ToolCalls, ToolCall{
+				Name:   p.FunctionCall.Name,
+				Args:   p.FunctionCall.Args,
+				Opaque: p.ThoughtSignature,
+			})
+		}
+	}	
 
-	// create a Usage struct with the input and output token counts from the result
+	// set the accumulated text in the reply struct
+	reply.Text = text.String()	
+
+	// set the usage statistics based on the result's usage metadata
 	usage := Usage{
 		InputTokens:  result.UsageMetadata.PromptTokenCount,
 		OutputTokens: result.UsageMetadata.CandidatesTokenCount,
 	}
 
-	// return the concatenated text, usage, and nil error
-	return text.String(), usage, nil
+	// return the reply, usage statistics, and nil error
+	return reply, usage, nil
 }
 
 type Gemini struct {
@@ -217,18 +256,50 @@ func buildRequest(history []Message, systemPrompt string) GeminiRequest {
 
 	// iterate over the history of messages and convert them to Content structs
 	for _, m := range history {
-		role := "user"
 
-		// if the message role is RoleAssistant, set the role to "model"
-		if m.Role == RoleAssistant {
-			role = "model"
+		// handle different message types based on the role and content of the message
+		switch {
+
+		// if the message has a tool result, create a FunctionResponse part and add it to the content
+		case m.ToolResult != nil:
+
+			// extract the result from the ToolResult and create a FunctionResponse part
+			resp := m.ToolResult.Result
+
+			// if the result is nil, create an empty map to avoid nil pointer dereference
+			if resp == nil {
+				resp = map[string]any{}
+			}
+			part := Part{FunctionResponse: &FunctionResponse{Name: m.ToolResult.Name, Response: resp}}
+
+			// if the last content in the contents slice is a user message with at least one part that has a FunctionResponse, append the new part to it
+			if n := len(contents); n > 0 && contents[n-1].Role == "user" &&
+				len(contents[n-1].Parts) > 0 && contents[n-1].Parts[0].FunctionResponse != nil {
+				contents[n-1].Parts = append(contents[n-1].Parts, part)
+			} else {
+				contents = append(contents, Content{Role: "user", Parts: []Part{part}})
+			}
+
+		case m.Role == RoleAssistant:
+			var parts []Part
+			if m.Content != "" {
+				parts = append(parts, Part{Text: m.Content})
+			}
+			for _, c := range m.ToolCalls {
+				args := c.Args
+				if args == nil {
+					args = map[string]any{}
+				}
+				parts = append(parts, Part{
+					FunctionCall:     &FunctionCall{Name: c.Name, Args: args},
+					ThoughtSignature: c.Opaque,
+				})
+			}
+			contents = append(contents, Content{Role: "model", Parts: parts})
+
+		default:
+			contents = append(contents, Content{Role: "user", Parts: []Part{{Text: m.Content}}})
 		}
-
-		// append the Content struct to the contents slice
-		contents = append(contents, Content{
-			Role:  role,
-			Parts: []Part{{Text: m.Content}},
-		})
 	}
 
 	// create a GeminiRequest struct with the contents and system prompt
@@ -305,7 +376,8 @@ func (g *Gemini) doWithRetry(ctx context.Context, url string, body []byte) (*htt
 }
 
 func (g *Gemini) Chat(ctx context.Context, history []Message, systemPrompt string) (string, Usage, error) {
-	return g.generate(ctx, buildRequest(history, systemPrompt))
+	reply , usage , err := g.generate(ctx, buildRequest(history, systemPrompt))
+	return reply.Text, usage, err	
 }
 
 func (g *Gemini) ChatJSON(ctx context.Context, history []Message, systemPrompt string, schema map[string]any) (string, Usage, error) {
@@ -315,6 +387,25 @@ func (g *Gemini) ChatJSON(ctx context.Context, history []Message, systemPrompt s
 	req.GenerationConfig = &GenerationConfig{
 		ResponseMimeType: "application/json", // set the response MIME type to application/json
 		ResponseSchema:   schema, // set the response schema for JSON validation
+	}
+
+	reply , usage , err := g.generate(ctx, req)
+	return reply.Text, usage, err
+}
+
+func (g *Gemini) ChatTools(ctx context.Context, history []Message, systemPrompt string, tools []ToolSpec) (Reply, Usage, error) {
+	req := buildRequest(history, systemPrompt)
+
+	if len(tools) > 0 {
+		decls := make([]FunctionDeclaration, 0, len(tools))
+		for _, t := range tools {
+			decls = append(decls, FunctionDeclaration{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
+			})
+		}
+		req.Tools = []Tool{{FunctionDeclarations: decls}}
 	}
 	return g.generate(ctx, req)
 }
