@@ -117,6 +117,7 @@ you> /tools summarise my os-lab note
 - [ ] **REST API**: expose chat and task endpoints over HTTP (Go `net/http`) alongside the CLI
 - [ ] **CI and Docker**: GitHub Actions to run `go test ./...` and a Dockerfile for easy setup
 
+
 ## Author
 
 **Shivam Singh**: [GitHub](https://github.com/shivamsi1404)
