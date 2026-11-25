@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
-	"path/filepath"
 
 	"github.com/joho/godotenv"
 
@@ -34,7 +34,7 @@ var taskSchema = map[string]any{
 	"required": []string{"title", "priority"},
 }
 
-// real tool 
+// real tool
 
 // the notes directory is where the user's notes are stored. It should be a folder named "notes" in the current working directory.
 const notesDir = "notes"
@@ -104,10 +104,17 @@ var toolSpecs = []llm.ToolSpec{
 	},
 }
 
+func logged(name string, h llm.ToolHandler) llm.ToolHandler {
+	return func(ctx context.Context, args map[string]any) (map[string]any, error) {
+		fmt.Printf("[tool] %s %v\n", name, args)
+		return h(ctx, args)
+	}
+}
+
 var toolHandlers = map[string]llm.ToolHandler{
-	"get_current_time": getCurrentTime,
-	"list_notes":       listNotes,
-	"read_note":        readNote,
+	"get_current_time": logged("get_current_time", getCurrentTime),
+	"list_notes":       logged("list_notes", listNotes),
+	"read_note":        logged("read_note", readNote),
 }
 
 func main() {
@@ -162,6 +169,42 @@ func main() {
 			continue
 		}
 		// ---- new block ends here ----
+
+		// ---- tool block starts here ----
+		if strings.HasPrefix(line, "/tools ") {
+			question := strings.TrimPrefix(line, "/tools ")
+
+			// tool turns live in a copy; the main history only gets the question and the final answer
+			msgs := append(append([]llm.Message(nil), history...), llm.Message{Role: llm.RoleUser, Content: question})
+
+			sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			ctx, cancel := context.WithTimeout(sigCtx, 2*time.Minute)
+			text, usage, err := llm.Runtools(ctx, provider, msgs, systemPrompt, toolSpecs, toolHandlers, 5)
+			ctxErr := ctx.Err()
+			cancel()
+			stop()
+
+			if err != nil {
+				switch {
+				case errors.Is(ctxErr, context.Canceled):
+					fmt.Println("[cancelled]")
+				case errors.Is(ctxErr, context.DeadlineExceeded):
+					fmt.Println("[timed out]")
+				default:
+					fmt.Println("error:", err)
+				}
+				continue
+			}
+
+			history = append(history,
+				llm.Message{Role: llm.RoleUser, Content: question},
+				llm.Message{Role: llm.RoleAssistant, Content: text},
+			)
+			fmt.Printf("ai> %s\n[tokens: in=%d out=%d]\n", text, usage.InputTokens, usage.OutputTokens)
+			continue
+		}
+
+		// ---- tool block ends here ----
 
 		history = append(history, llm.Message{Role: llm.RoleUser, Content: line})
 
